@@ -11,9 +11,15 @@
 /* Funções externalizadas */
 void MaquinaEstadosUART2(char dado);
 void SendLoopBack(void);
-void SendACK(void);
+void SendACK(char cmd);
 void SendPacoteIncorreto(void);
 void SendLeituraADC(uint32_t adcValue);
+
+/* BYTES DOS COMANDOS DO PROTOCOLO */
+#define LED_CMD_BYTE 'L'
+#define SERIAL_CMD_BYTE 'S'
+#define ADC_CMD_BYTE 'A'
+#define FAIL_CMD_BYTE 0xFF
 /* ESTADOS DE COMUNICAÇÃO SERIAL */
 typedef enum{
 	SERIAL_BYTE_INICIO = 1,
@@ -28,7 +34,6 @@ typedef enum ComandosUart{
 	CMD_ADC,
 	CMD_SERIAL
 }CMD_UART;
-
 /* TIPOS DE COMANDOS A SEREM ENVIADOS PARA TASK UART */
 typedef enum{
 	LIGAR_LED = 1,

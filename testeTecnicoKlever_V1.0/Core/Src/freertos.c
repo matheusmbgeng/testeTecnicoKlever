@@ -49,7 +49,7 @@
 /* USER CODE BEGIN Variables */
 QueueHandle_t xUartTaskQueue;
 QueueHandle_t xLedTaskQueue;
-QueueHandle_t xLedTaskQueue;
+
 SemaphoreHandle_t xUartSemaphore;
 /* USER CODE END Variables */
 osThreadId ADC_TaskHandle;
@@ -99,6 +99,7 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
+  /* Semáforo para compartilhamento da serial entre as tasks */
   xUartSemaphore = xSemaphoreCreateMutex();
   /* USER CODE END RTOS_SEMAPHORES */
 
@@ -108,17 +109,19 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+  /* Fila entre ISR e SERIAL_Task */
   xUartTaskQueue = xQueueCreate(5, sizeof(uint8_t));
+  /* Fila entre SERIAL_Task e LED_Task */
   xLedTaskQueue = xQueueCreate(5, sizeof(uint8_t));
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* definition and creation of ADC_Task */
-  osThreadDef(ADC_Task, ADCTask, osPriorityNormal, 0, 128);
+  osThreadDef(ADC_Task, ADCTask, osPriorityBelowNormal, 0, 128);
   ADC_TaskHandle = osThreadCreate(osThread(ADC_Task), NULL);
 
   /* definition and creation of SERIAL_Task */
-  osThreadDef(SERIAL_Task, SerialTask, osPriorityBelowNormal, 0, 128);
+  osThreadDef(SERIAL_Task, SerialTask, osPriorityNormal, 0, 128);
   SERIAL_TaskHandle = osThreadCreate(osThread(SERIAL_Task), NULL);
 
   /* definition and creation of LED_Task */
@@ -133,9 +136,8 @@ void MX_FREERTOS_Init(void) {
 
 /* USER CODE BEGIN Header_ADCTask */
 /**
-  * @brief  Function implementing the ADC_Task thread.
-  * @param  argument: Not used
-  * @retval None
+  * @brief Task responsável pela leitura do canal 0 do ADC 1. Caso a task seja notificada, envia a
+  * leitura do ADC pela serial.
   */
 /* USER CODE END Header_ADCTask */
 void ADCTask(void const * argument)
@@ -144,12 +146,14 @@ void ADCTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
+	/* Leitura do ADC */
 	HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
 	uint32_t valorAD = HAL_ADC_GetValue(&hadc1);
-
+	/* Checa se a task recebeu notificação. Não perde tempo de execução aguardando a notificação*/
 	uint32_t DummyNotification = 0;
 	BaseType_t TaskNotify = xTaskNotifyWait(pdFALSE, pdTRUE, &DummyNotification, 0);
 	if(TaskNotify == pdTRUE){
+		/* Caso tenha recebido a notificação, aguarda o semáforo para enviar o valor pela serial*/
 		if(xSemaphoreTake(xUartSemaphore, portMAX_DELAY)){
 			SendLeituraADC(valorAD);
 			xSemaphoreGive(xUartSemaphore);
@@ -162,9 +166,11 @@ void ADCTask(void const * argument)
 
 /* USER CODE BEGIN Header_SerialTask */
 /**
-* @brief Function implementing the SERIAL_Task thread.
-* @param argument: Not used
-* @retval None
+* @brief Recebe os comandos da ISR de Serial através da fila xUartTaskQueue. Atua como um "gerente"
+* do sistema, enviando comandos para atuação do LED através da fila xLedTaskQueue bem como
+* envio da leitura do ADC pela serial através de uma notificação enviada a task ADCTask.
+* Possui a maior prioridade entre as tasks para uma maior rapidez na execução dos comandos
+* recebidos pela ISR.
 */
 /* USER CODE END Header_SerialTask */
 void SerialTask(void const * argument)
@@ -178,14 +184,14 @@ void SerialTask(void const * argument)
 		  switch(CMDUartRcv){
 		  case LIGAR_LED:
 				if(xSemaphoreTake(xUartSemaphore, portMAX_DELAY)){
-					SendACK();
+					SendACK(LED_CMD_BYTE);
 					xSemaphoreGive(xUartSemaphore);
 				}
 				xQueueSend(xLedTaskQueue, &CMDUartRcv, portMAX_DELAY);
 			  break;
 		  case DESLIGAR_LED:
 				if(xSemaphoreTake(xUartSemaphore, portMAX_DELAY)){
-					SendACK();
+					SendACK(LED_CMD_BYTE);
 					xSemaphoreGive(xUartSemaphore);
 				}
 				xQueueSend(xLedTaskQueue, &CMDUartRcv, portMAX_DELAY);
@@ -193,7 +199,7 @@ void SerialTask(void const * argument)
 
 		  case TOOGLE_LED:
 				if(xSemaphoreTake(xUartSemaphore, portMAX_DELAY)){
-					SendACK();
+					SendACK(LED_CMD_BYTE);
 					xSemaphoreGive(xUartSemaphore);
 				}
 				xQueueSend(xLedTaskQueue, &CMDUartRcv, portMAX_DELAY);
@@ -206,10 +212,14 @@ void SerialTask(void const * argument)
 			  break;
 
 		  case LER_AD:
-
+			  /* Notificação recebe valor 0x00 e parâmetro eAction igual a eNoAction
+			   * pois não é usado o array de notificação da task. */
+			  xTaskNotify(ADC_TaskHandle, 0, eNoAction);
 			  break;
 
 		  case PACOTE_INCORRETO:
+			  	/* Caso o pacote recebido pela ISR esteja fora do padrão do protocolo estabelecido
+			  	 * retorna um ACK alertando falha na comunicação */
 				if(xSemaphoreTake(xUartSemaphore, portMAX_DELAY)){
 					SendPacoteIncorreto();
 					xSemaphoreGive(xUartSemaphore);
@@ -224,9 +234,8 @@ void SerialTask(void const * argument)
 
 /* USER CODE BEGIN Header_LedTask */
 /**
-* @brief Function implementing the LED_Task thread.
-* @param argument: Not used
-* @retval None
+* @brief Task para execução das operações do LED. Recebe a operação através da fila
+*  xLedTaskQueue.
 */
 /* USER CODE END Header_LedTask */
 void LedTask(void const * argument)

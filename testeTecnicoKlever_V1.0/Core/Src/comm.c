@@ -10,17 +10,22 @@
 #include "queue.h"
 #include "usart.h"
 /* Func Prototype */
+void Comm_TX(unsigned char *s, int bufferSize);
 void ResetMaquinaEstadosUART2(void);
 
+char CalcCheckSum(unsigned char * Buffer, int dataLen);
 /* Variáveis */
 ESTADOS_SERIAL UART2Estado = SERIAL_BYTE_INICIO;
 CMD_UART CMDUartISR= 0;
 CMD_TASK CMDTaskISR = 0;
 int8_t ParamLen = 0;
 int16_t CheckSum = 0;
-
+/*----------------------------------------------------------------------------------------------
+SendLeituraADC: Envia a leitura do ADC, recebida pelo parâmetro adcValue. Dado é enviado em formato
+Big-Endian. Envia na resposta o comando de leitura de AD.
+----------------------------------------------------------------------------------------------*/
 void SendLeituraADC(uint32_t adcValue){
-	unsigned char Buffer[8] = {0x01,'A', 0x04, adcValue >> 24, adcValue >> 16, adcValue >> 8, adcValue, 0x00};
+	unsigned char Buffer[8] = {0x01,ADC_CMD_BYTE, 0x04, adcValue >> 24, adcValue >> 16, adcValue >> 8, adcValue, 0x00};
 	int16_t CheckSum = 0;
 	for(int i = 0; i < sizeof(Buffer) - 1; i++){
 		CheckSum += Buffer[i];
@@ -29,50 +34,69 @@ void SendLeituraADC(uint32_t adcValue){
 	Buffer[7] = CheckSum % 256;
 	Comm_TX(Buffer, sizeof(Buffer));
 }
-
+/*----------------------------------------------------------------------------------------------
+SendLoopBack: Envia um ACK de pacote fora do padrão. O comando desse ACK é 0xFF.
+----------------------------------------------------------------------------------------------*/
 void SendPacoteIncorreto(void){
-	unsigned char Buffer[4] = {0x01,0xFF, 0x00, 0x00};
-	int16_t CheckSum = 0;
-	for(int i = 0; i < sizeof(Buffer) - 1; i++){
-		CheckSum += Buffer[i];
-	}
+	unsigned char Buffer[4] = {0x01,FAIL_CMD_BYTE, 0x00, 0x00};
 
-	Buffer[3] = CheckSum % 256;
+	Buffer[3] = CalcCheckSum(Buffer, sizeof(Buffer) - 1);
+	/* Envia pela serial */
 	Comm_TX(Buffer, sizeof(Buffer));
 }
-
+/*----------------------------------------------------------------------------------------------
+SendLoopBack: Envia o loopback pela Serial. Envia o comando serial do protocolo na resposta.
+----------------------------------------------------------------------------------------------*/
 void SendLoopBack(void){
-	unsigned char Buffer[4] = {0x01,'S',0x00, 0x00};
-	int16_t CheckSum = 0;
-	for(int i = 0; i < sizeof(Buffer) - 1; i++){
-		CheckSum += Buffer[i];
-	}
+	unsigned char Buffer[4] = {0x01,SERIAL_CMD_BYTE,0x00, 0x00};
 
-	Buffer[3] = CheckSum % 256;
+	Buffer[3] = CalcCheckSum(Buffer, sizeof(Buffer) - 1);
 	Comm_TX(Buffer, sizeof(Buffer));
 }
+/*----------------------------------------------------------------------------------------------
+SendACK: Envia ACK de acordo com o comando 'cmd' recebido.
+----------------------------------------------------------------------------------------------*/
+void SendACK(char cmd){
+	/* Envia ACK de acordo com o comando recebido*/
+	/* Possui 1 Parâmetro 'S', indicando sucesso na comunicação */
+	unsigned char Buffer[5] = {0x01, cmd,0x01,'S', 0x00};
 
-void SendACK(void){
-	unsigned char Buffer[5] = {0x01,'S',0x00,'S', 0x00};
-	int16_t CheckSum = 0;
-	for(int i = 0; i < sizeof(Buffer) - 1; i++){
-		CheckSum += Buffer[i];
-	}
-
-	Buffer[4] = CheckSum % 256;
+	Buffer[4] = CalcCheckSum(Buffer, sizeof(Buffer) - 1);
 	Comm_TX(Buffer, sizeof(Buffer));
 }
-
+/*----------------------------------------------------------------------------------------------
+Comm_TX: Função de envio na serial da UART2. Recebe como parâmetro o buffer de dados a ser enviado
+e o tamanho do pacote.
+----------------------------------------------------------------------------------------------*/
 void Comm_TX(unsigned char *s, int bufferSize)
 {
   while(bufferSize)
 	{
-	  while( !(USART2->SR & 0x00000040) ){}; // Espera ate registrador ficar limpo
+	  /* Espera ate registrador ficar limpo */
+	  while( !(USART2->SR & 0x00000040) ){};
 		HAL_UART_Transmit(&huart2,s, 1, 0xFFFF);
 		s++;
 		bufferSize--;
 	}
 }
+
+/*----------------------------------------------------------------------------------------------
+CalcCheckSum: Calcula o CheckSum do buffer pacoteDados. Parâmetro dataLen representa a
+quantidade de bytes que devem ser somados do buffer. Retorna o byte LSB da soma simples dos bytes.
+----------------------------------------------------------------------------------------------*/
+char CalcCheckSum(unsigned char * pacoteDados, int dataLen){
+	int16_t CheckSum = 0;
+	for(int i = 0; i < dataLen; i++){
+		CheckSum += pacoteDados[i];
+	}
+
+	return CheckSum % 256;
+}
+/*----------------------------------------------------------------------------------------------
+MaquinaEstadosUART2: Máquina de estados que recebe byte a byte da ISR de serial o protocolo
+estabelecido. Cada posição do protocolo corresponde a um estado definido no header comm.h.
+Recebe como parâmetro um char correspondente ao byte recebido na ISR.
+----------------------------------------------------------------------------------------------*/
 void MaquinaEstadosUART2(char dado){
 
 	switch(UART2Estado){
@@ -89,16 +113,16 @@ void MaquinaEstadosUART2(char dado){
 			}
 			break;
 		case SERIAL_BYTE_COMANDO:
-			if(dado == 'L'){
+			if(dado == LED_CMD_BYTE){
 				CheckSum+=dado;
 				CMDUartISR = CMD_LED;
 				UART2Estado = SERIAL_BYTE_LEN;
-			}else if(dado == 'S'){
+			}else if(dado == SERIAL_CMD_BYTE){
 				CheckSum+=dado;
 				CMDUartISR = CMD_SERIAL;
 				CMDTaskISR = LOOP_BACK;
 				UART2Estado = SERIAL_BYTE_LEN;
-			}else if(dado == 'A'){
+			}else if(dado == ADC_CMD_BYTE){
 				CheckSum+=dado;
 				CMDUartISR = CMD_ADC;
 				CMDTaskISR = LER_AD;
@@ -128,11 +152,12 @@ void MaquinaEstadosUART2(char dado){
 					}
 				}else{
 					/* int8_t não aceita números negativos*/
-					/* Else representa se dado = 0 */
+					/* Este else representa se dado = 0 */
 					if(CMDUartISR == CMD_ADC || CMDUartISR == CMD_SERIAL){
 						CheckSum+=dado;
 						UART2Estado = SERIAL_BYTE_CHECKSUM;
 					}else{
+						/* Este else represente se CMD recebido não for nem ADC nem Serial */
 						/* CMD_LED sempre tem um parâmetro */
 						CMDTaskISR = PACOTE_INCORRETO;
 						/* Envia alerta de pacote incorreto para task uart */
@@ -142,7 +167,7 @@ void MaquinaEstadosUART2(char dado){
 					}
 				}
 			}else{
-				/* Parametro só pode ter tamanho de no máximo 1 */
+				/* Parametros dos pacotes recebidos só tem no máximo  1 byte */
 				CMDTaskISR = PACOTE_INCORRETO;
 				/* Envia alerta de pacote incorreto para task uart */
 				xQueueSendFromISR(xUartTaskQueue,&CMDTaskISR,NULL);
@@ -164,7 +189,6 @@ void MaquinaEstadosUART2(char dado){
 				CMDTaskISR = TOOGLE_LED;
 				UART2Estado = SERIAL_BYTE_CHECKSUM;
 			}else{
-				/* ENVIA ALERTA PARA TASK UART */
 				CMDTaskISR = PACOTE_INCORRETO;
 				/* Envia alerta de pacote incorreto para task uart */
 				xQueueSendFromISR(xUartTaskQueue,&CMDTaskISR,NULL);
@@ -181,13 +205,17 @@ void MaquinaEstadosUART2(char dado){
 				/* Envia alerta de pacote incorreto para task uart */
 				xQueueSendFromISR(xUartTaskQueue,&CMDTaskISR,NULL);
 			}
-			/* Fim de comunicação*/
 			/* Reinicia a máquina de estados da UART */
 			ResetMaquinaEstadosUART2();
+			/* Fim de comunicação*/
 		break;
 	}
 }
-
+/*----------------------------------------------------------------------------------------------
+ResetMaquinaEstadosUART2: Reinicia os parâmetros da máquina de estados que recebe o pacote
+	byte a byte pela interrupção da serial. Função inline para garantir que o compilador
+	trate o corpo da função como uma continuação de onde foi chamada, pois se trata de uma ISR.
+----------------------------------------------------------------------------------------------*/
 inline void ResetMaquinaEstadosUART2(void){
 	UART2Estado = SERIAL_BYTE_INICIO;
 	CMDUartISR= 0;

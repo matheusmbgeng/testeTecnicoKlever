@@ -47,7 +47,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-uint8_t RXConsole;
+uint8_t DummyRxConsole;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -93,7 +93,9 @@ int main(void)
   MX_ADC1_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  HAL_UART_Receive_IT(&huart2,&RXConsole, 1);
+  /* Inicializa interrupção da Serial */
+  HAL_UART_Receive_IT(&huart2,&DummyRxConsole, 1);
+  /* Inicia ADC */
   HAL_ADC_Start(&hadc1);
   /* USER CODE END 2 */
 
